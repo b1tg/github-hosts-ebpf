@@ -1,4 +1,4 @@
-# aya-demo
+#  github-hosts-ebpf
 
 ## Prerequisites
 
