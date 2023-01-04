@@ -1,0 +1,2 @@
+[workspace]
+members = ["github-hosts", "github-hosts-common", "demo-server", "xtask"]

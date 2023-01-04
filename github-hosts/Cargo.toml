@@ -1,0 +1,21 @@
+[package]
+name = "github-hosts"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aya = { version = ">=0.11", features=["async_tokio"] }
+aya-log = "0.1"
+github-hosts-common = { path = "../github-hosts-common", features=["user"] }
+anyhow = "1.0.42"
+clap = { version = "4.0", features = ["derive"] }
+env_logger = "0.10"
+log = "0.4"
+tokio = { version = "1.23", features = ["macros", "rt", "rt-multi-thread", "net", "signal"] }
+
+aya-bpf = { git = "https://github.com/aya-rs/aya", branch = "main" }
+
+[[bin]]
+name = "github-hosts"
+path = "src/main.rs"
