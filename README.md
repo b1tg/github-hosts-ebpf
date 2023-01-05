@@ -1,28 +1,28 @@
 #  github-hosts-ebpf
 
-## Prerequisites
+基于 eBPF 修改 DNS 响应包加速 GitHub 访问
 
-1. Install a rust stable toolchain: `rustup install stable`
-1. Install a rust nightly toolchain: `rustup install nightly`
-1. Install bpf-linker: `cargo install bpf-linker`
+## 介绍
 
-## Build eBPF
 
-```bash
-cargo xtask build-ebpf
+通过 XDP 解析 DNS 响应包，当发现 DNS 解析域名为 GITHUB 相关域名时，
+修改 DNS 响应包中的 A 记录为加速 IP 地址。
+
+加速 IP 地址来源于 [ineo6/hosts](https://github.com/ineo6/hosts) 项目，该项目提供了加速国内 Github 访问的 hosts 文件。
+
+
+## 使用指南
+
+
+根据 [aya-rs](https://aya-rs.dev/book/start/development/) 的文档搭建 Rust 和 eBPF 的开发环境。
+
+
+运行:
+
+```sh
+RUST_LOG=debug cargo xtask run
 ```
 
-To perform a release build you can use the `--release` flag.
-You may also change the target architecture with the `--target` flag
 
-## Build Userspace
 
-```bash
-cargo build
-```
 
-## Run
-
-```bash
-RUST_LOG=info cargo xtask run
-```
