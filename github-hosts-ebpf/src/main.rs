@@ -43,7 +43,7 @@ const DNS_HDR_LEN_ALL: usize = ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN+DNS_HDR_LE
 
 #[map(name = "GITHUB_HOSTS")]
 static mut GITHUB_HOSTS: HashMap<[u8;256], [u8;4]> =
-    HashMap::<[u8;256], [u8;4]>::with_max_entries(10, 0);
+    HashMap::<[u8;256], [u8;4]>::with_max_entries(256, 0);
 
 #[inline(always)]
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Option<*const T> {
@@ -102,6 +102,11 @@ fn try_github_hosts(ctx: XdpContext) -> Result<u32, u32> {
     let mut data_len:usize = ctx.data_end() - ctx.data();
     trace!(&ctx, "data len: {}", data_len);
     trace!(&ctx, "udp_len: {}", udp_len);
+    let dns_hdr = ptr_at_mut::<dnshdr>(&ctx, ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN).ok_or(xdp_action::XDP_PASS)?;
+    if unsafe { (*dns_hdr).acount } == [0,0] {
+        info!(&ctx, "no answer rrs, skip");
+        return Ok(xdp_action::XDP_PASS);
+    }
     let mut j = 0;
     let mut num = 0u8;
     let mut q_len = 0;
@@ -122,8 +127,9 @@ fn try_github_hosts(ctx: XdpContext) -> Result<u32, u32> {
     let buf_ss = unsafe { ptr_at::<u8>(&ctx, DNS_HDR_LEN_ALL ).ok_or(xdp_action::XDP_PASS)? };
     let buf_ee = unsafe { ptr_at::<u8>(&ctx, DNS_HDR_LEN_ALL+j ).ok_or(xdp_action::XDP_PASS)? };
     let mut i = 0usize;
-    for _ in 0..20 {
-        query[i] = unsafe {0};
+    // TODO: size limit
+    // https://www.rfc-editor.org/rfc/rfc1035 2.3.4. Size limits
+    for _ in 0..255 {
         query[i] = unsafe { *(ptr_at::<u8>(&ctx, DNS_HDR_LEN_ALL+i ).ok_or(xdp_action::XDP_PASS)?) };
         i += 1;
         if unsafe { buf_ss.offset(i as _) } >= buf_ee {
@@ -149,6 +155,14 @@ fn try_github_hosts(ctx: XdpContext) -> Result<u32, u32> {
     } else {
         j += q_len;
     }
+    let a_type = unsafe { *(ptr_at_mut::<u16>(&ctx, (j as usize) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?) }; 
+
+    let a_type = u16::from_be(a_type);
+    if a_type != 1 {
+        info!(&ctx, "not A record answer, skip");
+        return Ok(xdp_action::XDP_PASS);
+    }
+
     j += 10;
     let ip0 =  ptr_at_mut::<u8>(&ctx, (j as usize) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?;
     let ip1 =  ptr_at_mut::<u8>(&ctx, (j as usize +1) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?;
