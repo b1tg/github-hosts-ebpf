@@ -8,7 +8,7 @@ use aya_bpf::{
     maps::HashMap,
     programs::XdpContext,
 };
-use aya_log_ebpf::{info, trace};
+use aya_log_ebpf::{info, trace, debug};
 
 mod bindings;
 use bindings::{ethhdr, iphdr, udphdr};
@@ -29,6 +29,8 @@ pub struct dnshdr {
 }
 
 
+const A: [u8;2] = 1u16.to_be_bytes(); 
+const CNAME: [u8;2] = 5u16.to_be_bytes(); 
 
 
 const IPPROTO_UDP: u8 = 0x0011;
@@ -37,8 +39,9 @@ const ETH_HDR_LEN: usize = mem::size_of::<ethhdr>();
 const IP_HDR_LEN: usize = mem::size_of::<iphdr>();
 const UDP_HDR_LEN: usize = mem::size_of::<udphdr>();
 
-const DNS_HDR_LEN: usize = mem::size_of::<dnshdr>();
+const DNS_HDR_LEN: usize = mem::size_of::<dnshdr>(); // 12
 
+const UDP_HDR_LEN_ALL: usize = ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN;
 const DNS_HDR_LEN_ALL: usize = ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN+DNS_HDR_LEN;
 
 #[map(name = "GITHUB_HOSTS")]
@@ -63,6 +66,30 @@ fn ptr_at_mut<T>(ctx: &XdpContext, offset: usize) -> Option<*mut T> {
     let ptr = ptr_at::<T>(ctx, offset)?;
     Some(ptr as *mut T)
 }
+
+#[inline(always)]
+fn parse_dns_host(ctx: &XdpContext, offset: usize) -> Option<usize>{
+    let mut j = offset;
+    let a_num = unsafe { *(ptr_at::<u16>(&ctx, j)?)  };
+    let a_num = u16::from_be(a_num);
+    if a_num & 0xc000 == 0xc000 {
+        debug!(ctx, "compressed...");
+        return Some(2);
+    } 
+    // 0..5: support a.b.c.d
+    for i in 0..5 {
+        let a_num = unsafe { *(ptr_at::<u8>(&ctx, j)?)  };
+        j += 1;
+        if a_num == 0 {
+            break;
+        }
+        debug!(ctx, "a_num: 0x{:x} i: {}", a_num, i);
+        j += a_num as usize;
+    }
+    return Some(j - offset);
+}
+
+
 
 #[xdp(name="github_hosts")]
 pub fn github_hosts(ctx: XdpContext) -> u32 {
@@ -103,35 +130,37 @@ fn try_github_hosts(ctx: XdpContext) -> Result<u32, u32> {
     trace!(&ctx, "data len: {}", data_len);
     trace!(&ctx, "udp_len: {}", udp_len);
     let dns_hdr = ptr_at_mut::<dnshdr>(&ctx, ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN).ok_or(xdp_action::XDP_PASS)?;
-    if unsafe { (*dns_hdr).acount } == [0,0] {
-        info!(&ctx, "no answer rrs, skip");
+    let qcount = u16::from_be_bytes(unsafe { (*dns_hdr).qcount }); 
+    let acount = u16::from_be_bytes(unsafe { (*dns_hdr).acount }); 
+    if qcount != 1 {
+        info!(&ctx, "only support single question, pass");
         return Ok(xdp_action::XDP_PASS);
     }
+    if acount == 0 {
+        info!(&ctx, "no answer rrs, pass");
+        return Ok(xdp_action::XDP_PASS);
+    }
+    debug!(&ctx, "answer number: {}", acount);
     let mut j = 0;
     let mut num = 0u8;
     let mut q_len = 0;
     let mut query = [0u8;256];
     let mut qi = 0;
-    for _ in 0..4 {
-        num = unsafe { *(ptr_at::<u8>(&ctx, (j as usize) + ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN+DNS_HDR_LEN).ok_or(xdp_action::XDP_PASS)?)  };
-        if num == 0 {
-            q_len += 1;
-            j += 1;
-            break;
-        }
-        j += 1;
-        j += (num as usize);
-        q_len += 1;
-        q_len += (num as usize);
-    }
+
+    let q_len = parse_dns_host(&ctx, DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?; 
+    debug!(&ctx, "q_len: {}", q_len);
+    j += q_len;
     let buf_ss = unsafe { ptr_at::<u8>(&ctx, DNS_HDR_LEN_ALL ).ok_or(xdp_action::XDP_PASS)? };
-    let buf_ee = unsafe { ptr_at::<u8>(&ctx, DNS_HDR_LEN_ALL+j ).ok_or(xdp_action::XDP_PASS)? };
-    let mut i = 0usize;
+    let buf_ee = unsafe { ptr_at::<u8>(&ctx, DNS_HDR_LEN_ALL+q_len ).ok_or(xdp_action::XDP_PASS)? };
     // TODO: size limit
     // https://www.rfc-editor.org/rfc/rfc1035 2.3.4. Size limits
+    let mut i = 0usize;
     for _ in 0..255 {
         query[i] = unsafe { *(ptr_at::<u8>(&ctx, DNS_HDR_LEN_ALL+i ).ok_or(xdp_action::XDP_PASS)?) };
         i += 1;
+        if ctx.data() + DNS_HDR_LEN_ALL + i >= ctx.data_end() {
+            break;
+        }
         if unsafe { buf_ss.offset(i as _) } >= buf_ee {
             break;
         }
@@ -147,24 +176,47 @@ fn try_github_hosts(ctx: XdpContext) -> Result<u32, u32> {
         }
     };
     j += 4;
-    let a_num = unsafe { *(ptr_at::<u8>(&ctx, (j as usize) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?)  };
-    trace!(&ctx, "a_num: 0x{:x}, q_len: {}", a_num, q_len);
-    if a_num & 0xc0 == 0xc0 {
-        trace!(&ctx, "compressed...");
-        j += 2;
-    } else {
-        j += q_len;
+    let mut found_a = false;
+    // parse DNS answers
+    // TODO: only support 20 answers now
+    for i in 0..20 {
+        let a_len = parse_dns_host(&ctx, (j as usize) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?;
+        info!(&ctx, "a_len: {}", a_len);
+        // need this or raise error: R1 min value is negative, either use unsigned index or do a if (index >=0) check.
+        if a_len > 255 {
+            return Ok(xdp_action::XDP_PASS);
+        }
+        j += a_len;
+       let a_type = unsafe { *(ptr_at_mut::<[u8;2]>(&ctx, (j as usize) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?) }; 
+       info!(&ctx, "a_type: {}", a_type[1]);
+        if a_type == A {
+            info!(&ctx, "found A record answer");
+            found_a = true;
+            break;
+        }
+        if a_type != A {
+            info!(&ctx, "not A record answer, skip {}", a_type[1]);
+        }
+        j += 2; // a_type
+        j += 2; // a_class
+        j += 4; // a_ttl
+        let a_data_len = u16::from_be_bytes(unsafe { *(ptr_at_mut::<[u8;2]>(&ctx, (j as usize) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?) }); 
+        info!(&ctx, "a_data_len: 0x{:x}", a_data_len);
+        j += 2; // a_data_length
+        // need this or raise error: math between pkt pointer and register with unbounded min value is not allowed
+        if a_data_len > 255 {
+            return Ok(xdp_action::XDP_PASS);
+        }
+        j += a_data_len as usize;
     }
-    let a_type = unsafe { *(ptr_at_mut::<u16>(&ctx, (j as usize) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?) }; 
 
-    let a_type = u16::from_be(a_type);
-    if a_type != 1 {
-        info!(&ctx, "not A record answer, skip");
+    if !found_a {
+        info!(&ctx, "no A record answer, pass");
         return Ok(xdp_action::XDP_PASS);
     }
 
     j += 10;
-    let ip0 =  ptr_at_mut::<u8>(&ctx, (j as usize) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?;
+    let ip0 =  ptr_at_mut::<u8>(&ctx, (j as usize +0) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?;
     let ip1 =  ptr_at_mut::<u8>(&ctx, (j as usize +1) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?;
     let ip2 =  ptr_at_mut::<u8>(&ctx, (j as usize +2) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?;
     let ip3 =  ptr_at_mut::<u8>(&ctx, (j as usize +3) + DNS_HDR_LEN_ALL).ok_or(xdp_action::XDP_PASS)?;
