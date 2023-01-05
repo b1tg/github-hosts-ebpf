@@ -17,11 +17,24 @@
 根据 [aya-rs](https://aya-rs.dev/book/start/development/) 的文档搭建 Rust 和 eBPF 的开发环境。
 
 
-运行:
+运行效果如下，当检测到 GITHUB 相关域名时替换 DNS 响应包中的 IP 地址：
 
 ```sh
-RUST_LOG=debug cargo xtask run
+$ RUST_LOG=debug cargo xtask run
+add github hosts: github.io: 185.199.108.153
+add github hosts: github.io: 185.199.108.153
+add github hosts: github.com: 140.82.113.4
+add github hosts: api.github.com: 140.82.114.5
+add github hosts: raw.githubusercontent.com: 185.199.108.133
+[...]
+[2023-01-05T10:33:44Z INFO  github_hosts] Waiting for Ctrl-C...
+[2023-01-05T10:33:58Z INFO  github_hosts] received a DNS packet
+[2023-01-05T10:33:58Z INFO  github_hosts] found github hosts
+[2023-01-05T10:33:58Z INFO  github_hosts] old ip: 185.199.111.133
+[2023-01-05T10:33:58Z INFO  github_hosts] new ip: 185.199.108.133
+
 ```
+
 
 
 
