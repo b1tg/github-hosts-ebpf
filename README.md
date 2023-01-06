@@ -2,6 +2,8 @@
 
 基于 eBPF 修改 DNS 响应包加速 GitHub 访问
 
+相关博客：[基于 eBPF+Rust 的 Github DNS 加速](https://b1tg.github.io/post/github-hosts-ebpf/)
+
 ## 介绍
 
 
